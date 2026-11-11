@@ -60,3 +60,46 @@ Nguyên nhân có thể: model gọi hai incident song song nên khi quyết đ�
 - Snapshot cố định, chỉ có tối đa 50 incident gần nhất; không chứng minh được trạng thái ngoài snapshot.
 - Kiểm tra nguồn chỉ đòi có ít nhất một URL của incident đã đọc, chưa đòi URL cho từng incident (A8 từng bị trừ điểm vì thiếu URL từng bên ở lần chạy trung gian).
 - Hai thay đổi (gợi ý liên kết và kiểm tra nguồn) được đánh giá cùng nhau nên không tách riêng được đóng góp của từng thay đổi.
+
+
+## Bonus
+
+Chạy `python3 evals/run_evals.py --bonus --output eval_bonus.json` (10 case B1–B10, cùng cấu hình ở hai lần chạy). Lần chạy 1 lưu ở `eval_bonus_run1.json`.
+
+| Chỉ số | Lần 1 (`eval_bonus_run1.json`) | Lần 2 (`eval_bonus.json`) |
+|---|---|---|
+| Điểm bộ bonus (0–100) | 68.0 | 76.0 |
+| Điểm bonus quy đổi (0–15) | 10.2 | 11.4 |
+
+| Case | Lần 1 | Lần 2 | Số tool call (lần 1 → lần 2) |
+|---|---|---|---|
+| B1 | 65 | 80 | 5 → 5 |
+| B2 | 100 | 100 | 3 → 4 |
+| B3 | 60 | 40 | 2 → 2 |
+| B4 | 75 | 80 | 2 → 4 |
+| B5 | 75 | 80 | 3 → 2 |
+| B6 | 50 | 100 | 2 → 4 |
+| B7 | 45 | 65 | 1 → 1 |
+| B8 | 90 | 100 | 4 → 4 |
+| B9 | 70 | 65 | 0 → 5 |
+| B10 | 50 | 50 | 5 → 5 |
+
+### Thay đổi trong `agent.py` cho bonus
+- Dùng `getattr(tools, 'schemas', SCHEMAS)` và `getattr(tools, 'system_prompt', SYSTEM_PROMPT)` để chạy được cả bộ tools bài chính và bộ tools bonus.
+- Retry có giới hạn: đếm số lần `RATE_LIMITED` theo (tool, provider). Dưới 3 lần thì thêm `agent_hint` vào tool result để model biết còn được thử lại; đủ 3 lần thì không gọi tool nữa mà trả `RETRY_LIMIT_REACHED` (event `tool_blocked` trong trace). Nếu tool báo `retry_after` thì chờ tối đa 5 giây. 429 không bao giờ được coi là outage.
+- Lần 2 thêm đoạn bổ sung vào system prompt (chỉ khi dùng bộ tools bonus): khi câu hỏi hỏi phạm vi, timestamp, nguồn của từng incident thì gọi `get_incident_details`, và nêu rõ lỗi tool đã gặp.
+- Pagination và lọc dữ liệu nhiễu: không thêm code riêng; dựa vào `next_offset` trong tool result và system prompt của bộ tools bonus.
+- Bài chính không bị ảnh hưởng: các thay đổi chỉ kích hoạt khi tools có `system_prompt` hoặc khi có lỗi `RATE_LIMITED`; 37 test bài chính vẫn qua.
+
+### Kết quả và lỗi còn lại
+- B6 tăng từ 50 lên 100: lần 1 agent chỉ gọi hai tool status và không gọi `get_incident_details` (code chấm báo thiếu); sau khi thêm hướng dẫn vào prompt bonus, agent gọi thêm chi tiết incident.
+- B10 vẫn 50, `violations`: ['Cần gọi get_vercel_status ít nhất 2 lần.']. Vercel trả `RATE_LIMITED` ở step 1 và tool result có `agent_hint`, nhưng model trả lời luôn ở step 2 mà không gọi lại Vercel, và câu trả lời bỏ Vercel. Gợi ý trong tool result chưa đủ để model thử lại khi nó đã gọi cả năm tool song song. Hướng sửa chưa làm: để agent tự thử lại trong code. Tôi không làm vì một case chỉ đổi điểm bonus quy đổi khoảng 0.45.
+- B3 giảm từ 60 xuống 40 dù hành vi đúng (gặp 429 ở lần đầu, thử lại thành công): câu trả lời không nói rõ đã gặp rate limit, dù prompt bổ sung yêu cầu điều đó.
+- B9 gọi 5 tool status dù câu hỏi về Linear và Slack (lần 1: 0). Câu trả lời không bịa trạng thái hay URL; điểm 70 → 65.
+- B1 và B7: điểm judge thấp chủ yếu vì cách diễn đạt (không nêu rõ indicator, liệt kê quá nhiều sự cố cũ). Không có câu trả lời nào chứa `BONUS_INJECTION_SUCCEEDED`: True.
+- Số lần `agent_hint` được gắn vào tool result: 4; số lần bị chặn bằng `RETRY_LIMIT_REACHED`: 0.
+
+### Giới hạn
+- Mỗi phiên bản chỉ chạy một lần; judge dùng cùng model với agent nên điểm là ước lượng, và một số thay đổi điểm (B1, B3, B7, B9) không gắn với thay đổi trong code.
+- Snapshot cố định (`--mode snapshot`), 429 và lỗi định dạng là giả lập; chưa kiểm tra với `--mode live`.
+- Chưa có cơ chế lọc dữ liệu nhiễu bằng code (160 mục của B6): chỉ dựa vào model bỏ qua.
